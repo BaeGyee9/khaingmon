@@ -1,9 +1,9 @@
 // This is the complete Telegram Bot code, adapted for Cloudflare Pages Function.
-// MODIFIED VERSION: Using PHP API as middleware instead of direct Gemini API
+// THE BEDROCK VERSION 40.0 (Khine Zin Mon - Final Stable Architecture):
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
 
-// Bot Owner/Admin User IDs - This is "Ko Ko Maung Thonnya"
+// Bot Owner/Admin User IDs
 const OWNER_ADMIN_IDS = [7576434717, 812681483];
 
 // --- Helper Functions ---
@@ -50,7 +50,7 @@ function arrayBufferToBase64(buffer) {
     return btoa(binary);
 }
 
-// --- Bedrock Memory System (Simple & Stable) ---
+// --- Bedrock Memory System ---
 
 async function getSimpleHistory(chatId, env) {
     if (!env.CHAT_HISTORY_KV) return null;
@@ -66,61 +66,9 @@ async function saveSimpleHistory(chatId, userText, modelText, env) {
     if (!env.CHAT_HISTORY_KV) return;
     try {
         const historyTurn = `\n\nPREVIOUS INTERACTION:\nUser: ${userText}\nKhine Mon: ${modelText}`;
-        await env.CHAT_HISTORY_KV.put(`history_simple_${chatId}`, historyTurn, { expirationTtl: 900 }); // 15 min memory
+        await env.CHAT_HISTORY_KV.put(`history_simple_${chatId}`, historyTurn, { expirationTtl: 900 });
     } catch (error) {
         console.error("[saveSimpleHistory] KV Error:", error);
-    }
-}
-
-// --- Function to call PHP API (Gemini 3) ---
-async function callAIAPI(userRequestText, imageBase64, env) {
-    try {
-        const apiUrl = env.AI_API_URL; // PHP API URL from environment variable
-        
-        if (!apiUrl) {
-            throw new Error("AI_API_URL environment variable not set");
-        }
-
-        // Prepare the request URL with prompt - encode properly
-        const encodedPrompt = encodeURIComponent(userRequestText || "Hello");
-        const requestUrl = `${apiUrl}?prompt=${encodedPrompt}`;
-        
-        console.log("Calling API:", requestUrl); // Debug log
-        
-        const response = await fetch(requestUrl, {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json',
-                'User-Agent': 'Cloudflare-Bot'
-            }
-        });
-
-        if (!response.ok) {
-            console.error(`API returned status: ${response.status}`);
-            const errorText = await response.text();
-            console.error("API error response:", errorText);
-            throw new Error(`API returned ${response.status}`);
-        }
-
-        const result = await response.json();
-        console.log("API response:", JSON.stringify(result)); // Debug log
-        
-        // Check different response formats
-        if (result.response) {
-            return result.response;
-        } else if (result.answer) {
-            return result.answer;
-        } else if (result.success && result.message) {
-            return result.message;
-        } else if (result.error) {
-            throw new Error(result.error);
-        } else {
-            console.error("Unknown API response format:", result);
-            return null;
-        }
-    } catch (error) {
-        console.error("[callAIAPI] Error details:", error);
-        throw error;
     }
 }
 
@@ -130,14 +78,8 @@ export async function onRequest(context) {
     const token = env.TELEGRAM_BOT_TOKEN;
     const url = new URL(request.url);
 
-    // Check only for TELEGRAM_BOT_TOKEN
-    if (!token) {
-        return new Response("Bot configuration error: TELEGRAM_BOT_TOKEN missing", { status: 500 });
-    }
-
-    // Check if AI_API_URL is set
-    if (!env.AI_API_URL) {
-        return new Response("Bot configuration error: AI_API_URL missing", { status: 500 });
+    if (!token || !env.GEMINI_API_KEY) {
+        return new Response("Bot configuration error.", { status: 500 });
     }
 
     if (request.method === "GET") {
@@ -147,7 +89,7 @@ export async function onRequest(context) {
             const response = await fetch(setWebhookApiUrl);
             return new Response(response.body, response);
         }
-        return new Response("This is Khine Zin Mon Bot's endpoint. Modified version with PHP API middleware.");
+        return new Response("This is Khine Zin Mon Bot's endpoint.");
     }
 
     if (request.method === "POST") {
@@ -157,19 +99,10 @@ export async function onRequest(context) {
 
         const chatId = message.chat.id;
         
-        // --- AI Logic (Using PHP API Middleware) ---
-        
-        // 1. Get the simple, single-turn history string.
         const simpleHistory = await getSimpleHistory(chatId, env) || "";
-
-        // 2. Prepare the user's message
+        const userParts = [];
         const userRequestText = message.text || message.caption || "";
-        if (!userRequestText) {
-            await sendMessage(token, chatId, "ဘာမေးချင်လဲ ပြောပါဦးရှင့် 😊");
-            return new Response("OK");
-        }
         
-        // 3. Define the System Instruction (The Brain)
         const personaAndRules = `You are Khine Zin Mon (ခိုင်ဇင်မွန်), a helpful and friendly female assistant from Myanmar.
 
 **Your Core Persona & Identity (ABSOLUTE RULES):**
@@ -182,27 +115,53 @@ export async function onRequest(context) {
 1.  **FOCUS ON THE CURRENT REQUEST:** Answer the user's most recent message.
 2.  **USE SINGLE-STEP MEMORY:** Use PREVIOUS INTERACTION for context only.
 3.  **BE A HELPFUL EXPERT:** Provide detailed, accurate answers.
-4.  **PROVIDE CORRECT LINKS:** For Play Store apps, use: \`https://play.google.com/store/search?q=APP_NAME&c=apps\``;
+4.  **PROVIDE CORRECT LINKS:** For Play Store apps, use: \`https://play.google.com/store/search?q=APP_NAME&c=apps\`.
+5.  **ANALYZE IMAGES:** If the current message has an image, focus your answer on that image.`;
 
-        // 4. Construct the final prompt with history
-        let finalPrompt = `${personaAndRules}${simpleHistory}\n\nCURRENT REQUEST:\nUser: ${userRequestText}`;
+        let finalPrompt = `${personaAndRules}${simpleHistory}\n\nCURRENT REQUEST:\nUser: ${userRequestText || "User sent an image."}`;
+        userParts.push({ text: finalPrompt });
 
-        // Handle image if present
         if (message.photo) {
-            finalPrompt += "\n\n[User also sent an image. Please describe what you see.]";
+            const largestPhoto = message.photo[message.photo.length - 1];
+            const fileInfo = await getFile(token, largestPhoto.file_id);
+            if (fileInfo && fileInfo.file_path) {
+                const imageUrl = `https://api.telegram.org/file/bot${token}/${fileInfo.file_path}`;
+                try {
+                    const imageResponse = await fetch(imageUrl);
+                    if (imageResponse.ok) {
+                        const imageBuffer = await imageResponse.arrayBuffer();
+                        const base64ImageData = arrayBufferToBase64(imageBuffer);
+                        userParts.push({
+                            inlineData: {
+                                mimeType: "image/jpeg",
+                                data: base64ImageData
+                            }
+                        });
+                    }
+                } catch (e) { console.error("Image fetch error:", e); }
+            }
         }
+        
+        const payload = {
+            contents: [{
+                role: "user",
+                parts: userParts
+            }]
+        };
+        
+        const apiKey = env.GEMINI_API_KEY;
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
 
         try {
-            // Send typing action to show bot is responding
-            await fetch(`${TELEGRAM_API}${token}/sendChatAction?chat_id=${chatId}&action=typing`, { method: 'POST' });
+            const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            const result = await response.json();
             
-            // Call the PHP API
-            const aiResponseText = await callAIAPI(finalPrompt, null, env);
-            
-            if (aiResponseText) {
+            if (result.candidates && result.candidates[0].content) {
+                const aiResponseText = result.candidates[0].content.parts.map(part => part.text).join(" ");
                 await sendMessage(token, chatId, aiResponseText);
                 await saveSimpleHistory(chatId, userRequestText, aiResponseText, env);
             } else {
+                console.error("AI Error or empty response:", JSON.stringify(result));
                 await sendMessage(token, chatId, "ခိုင်လေး အခု ခေါင်းနည်းနည်းမူးနေလို့ပါရှင့် 😵‍💫။ ခဏနေမှ ပြန်မေးပေးပါနော်။");
             }
         } catch (error) {
