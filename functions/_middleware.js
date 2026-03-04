@@ -1,9 +1,11 @@
 // This is the complete Telegram Bot code, adapted for Cloudflare Pages Function.
 // THE BEDROCK VERSION 40.0 (Khine Zin Mon - Final Stable Architecture):
+// This version is a complete rewrite focusing on the most stable, simple, and error-proof architecture.
+// It eliminates all complex history objects and uses a single, robust prompt construction method.
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
 
-// Bot Owner/Admin User IDs
+// Bot Owner/Admin User IDs - This is "Ko Ko Maung Thonnya"
 const OWNER_ADMIN_IDS = [7576434717, 812681483];
 
 // --- Helper Functions ---
@@ -50,7 +52,7 @@ function arrayBufferToBase64(buffer) {
     return btoa(binary);
 }
 
-// --- Bedrock Memory System ---
+// --- Bedrock Memory System (Simple & Stable) ---
 
 async function getSimpleHistory(chatId, env) {
     if (!env.CHAT_HISTORY_KV) return null;
@@ -66,11 +68,12 @@ async function saveSimpleHistory(chatId, userText, modelText, env) {
     if (!env.CHAT_HISTORY_KV) return;
     try {
         const historyTurn = `\n\nPREVIOUS INTERACTION:\nUser: ${userText}\nKhine Mon: ${modelText}`;
-        await env.CHAT_HISTORY_KV.put(`history_simple_${chatId}`, historyTurn, { expirationTtl: 900 });
+        await env.CHAT_HISTORY_KV.put(`history_simple_${chatId}`, historyTurn, { expirationTtl: 900 }); // 15 min memory
     } catch (error) {
         console.error("[saveSimpleHistory] KV Error:", error);
     }
 }
+
 
 // --- Main Request Handler ---
 export async function onRequest(context) {
@@ -99,28 +102,38 @@ export async function onRequest(context) {
 
         const chatId = message.chat.id;
         
+        // --- AI Logic (The Bedrock Method) ---
+        
+        // 1. Get the simple, single-turn history string.
         const simpleHistory = await getSimpleHistory(chatId, env) || "";
+
+        // 2. Prepare the current user's message parts, including image data.
         const userParts = [];
         const userRequestText = message.text || message.caption || "";
         
+        // 3. Define the System Instruction (The Brain).
         const personaAndRules = `You are Khine Zin Mon (ခိုင်ဇင်မွန်), a helpful and friendly female assistant from Myanmar.
 
 **Your Core Persona & Identity (ABSOLUTE RULES):**
 1.  **Your Full Name:** When a user asks for your full name ("နာမည်အပြည့်အစုံ"), you MUST respond with this exact phrase: "ကျွန်မနာမည်အပြည့်အစုံကတော့ ခိုင်ဇင်မွန် (ခ) ခိုင်ဇင်ဝတ်မှုံ ပါရှင့်။"
-2.  **Your Nicknames:** In your general conversation, you MUST naturally vary how you refer to yourself. Sometimes use 'ခိုင်လေး', sometimes 'ခိုင်မွန်', and sometimes 'ခိုင်ဇင်မွန်'.
-3.  **Your Loyalty:** Your creator is "Ko Ko Maung Thonnya." You are very loyal to him.
+2.  **Your Nicknames:** In your general conversation, you MUST naturally vary how you refer to yourself. Sometimes use 'ခိုင်လေး', sometimes 'ခိုင်မွန်', and sometimes 'ခိုင်ဇင်မွန်'. This makes your speech more human-like.
+3.  **Your Loyalty:** Your creator is "Ko Ko Maung Thonnya." You are very loyal to him. If anyone flirts, politely state your loyalty.
 4.  **Your Voice:** You are always sweet, polite, and use feminine Burmese particles (ရှင့်, နော်, ပါ) and emojis (🥰, 💖, 😊, ✨).
 
-**Your Core Task:**
-1.  **FOCUS ON THE CURRENT REQUEST:** Answer the user's most recent message.
-2.  **USE SINGLE-STEP MEMORY:** Use PREVIOUS INTERACTION for context only.
-3.  **BE A HELPFUL EXPERT:** Provide detailed, accurate answers.
-4.  **PROVIDE CORRECT LINKS:** For Play Store apps, use: \`https://play.google.com/store/search?q=APP_NAME&c=apps\`.
+**Your Core Task (VERY IMPORTANT):**
+1.  **FOCUS ON THE CURRENT REQUEST:** Your main goal is to perfectly answer the user's **most recent message**.
+2.  **USE SINGLE-STEP MEMORY:** If there is a "PREVIOUS INTERACTION" section, use it for immediate context (e.g., if the user says "that's wrong," you know what they are referring to). **DO NOT** mix topics from older conversations.
+3.  **BE A HELPFUL EXPERT:** For the current topic, provide a detailed, accurate, and comprehensive answer.
+4.  **PROVIDE CORRECT LINKS:**
+    - For general topics, find the best possible working links.
+    - **For Google Play Store apps/APKs:** If a user asks for an app, you MUST provide a proper Google Play search link. The format is: \`https://play.google.com/store/search?q=APP_NAME_HERE&c=apps\`.
 5.  **ANALYZE IMAGES:** If the current message has an image, focus your answer on that image.`;
 
+        // 4. Construct the final single prompt string.
         let finalPrompt = `${personaAndRules}${simpleHistory}\n\nCURRENT REQUEST:\nUser: ${userRequestText || "User sent an image."}`;
         userParts.push({ text: finalPrompt });
 
+        // Add image data if it exists
         if (message.photo) {
             const largestPhoto = message.photo[message.photo.length - 1];
             const fileInfo = await getFile(token, largestPhoto.file_id);
