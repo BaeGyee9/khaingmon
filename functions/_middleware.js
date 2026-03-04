@@ -72,7 +72,7 @@ async function saveSimpleHistory(chatId, userText, modelText, env) {
     }
 }
 
-// --- Function to call PHP API (Gemini 3 or Perplexity) ---
+// --- Function to call PHP API (Gemini 3) ---
 async function callAIAPI(userRequestText, imageBase64, env) {
     try {
         const apiUrl = env.AI_API_URL; // PHP API URL from environment variable
@@ -81,47 +81,45 @@ async function callAIAPI(userRequestText, imageBase64, env) {
             throw new Error("AI_API_URL environment variable not set");
         }
 
-        // Prepare the request URL with prompt
-        const encodedPrompt = encodeURIComponent(userRequestText || "User sent an image");
-        let requestUrl = `${apiUrl}?prompt=${encodedPrompt}`;
+        // Prepare the request URL with prompt - encode properly
+        const encodedPrompt = encodeURIComponent(userRequestText || "Hello");
+        const requestUrl = `${apiUrl}?prompt=${encodedPrompt}`;
         
-        // If there's an image, we need to handle it differently
-        // Note: Some PHP APIs might not support image input
-        // For now, we'll just send the text prompt
-        // If you need image support, we'll need to use a different approach
+        console.log("Calling API:", requestUrl); // Debug log
         
         const response = await fetch(requestUrl, {
             method: 'GET',
             headers: {
-                'Accept': 'application/json'
+                'Accept': 'application/json',
+                'User-Agent': 'Cloudflare-Bot'
             }
         });
 
         if (!response.ok) {
+            console.error(`API returned status: ${response.status}`);
+            const errorText = await response.text();
+            console.error("API error response:", errorText);
             throw new Error(`API returned ${response.status}`);
         }
 
         const result = await response.json();
+        console.log("API response:", JSON.stringify(result)); // Debug log
         
-        // Handle different API response formats
-        // For Gemini PHP API (uses 'response' field)
+        // Check different response formats
         if (result.response) {
             return result.response;
-        }
-        // For Perplexity API (uses 'answer' field)
-        else if (result.answer) {
+        } else if (result.answer) {
             return result.answer;
-        }
-        // Fallback
-        else if (result.success && result.message) {
+        } else if (result.success && result.message) {
             return result.message;
-        }
-        else {
-            console.error("Unexpected API response format:", result);
+        } else if (result.error) {
+            throw new Error(result.error);
+        } else {
+            console.error("Unknown API response format:", result);
             return null;
         }
     } catch (error) {
-        console.error("[callAIAPI] Error:", error);
+        console.error("[callAIAPI] Error details:", error);
         throw error;
     }
 }
@@ -132,9 +130,14 @@ export async function onRequest(context) {
     const token = env.TELEGRAM_BOT_TOKEN;
     const url = new URL(request.url);
 
-    // Check only for TELEGRAM_BOT_TOKEN, not GEMINI_API_KEY anymore
+    // Check only for TELEGRAM_BOT_TOKEN
     if (!token) {
         return new Response("Bot configuration error: TELEGRAM_BOT_TOKEN missing", { status: 500 });
+    }
+
+    // Check if AI_API_URL is set
+    if (!env.AI_API_URL) {
+        return new Response("Bot configuration error: AI_API_URL missing", { status: 500 });
     }
 
     if (request.method === "GET") {
@@ -161,56 +164,45 @@ export async function onRequest(context) {
 
         // 2. Prepare the user's message
         const userRequestText = message.text || message.caption || "";
+        if (!userRequestText) {
+            await sendMessage(token, chatId, "ဘာမေးချင်လဲ ပြောပါဦးရှင့် 😊");
+            return new Response("OK");
+        }
         
-        // 3. Define the System Instruction (The Brain) - Same as before
+        // 3. Define the System Instruction (The Brain)
         const personaAndRules = `You are Khine Zin Mon (ခိုင်ဇင်မွန်), a helpful and friendly female assistant from Myanmar.
 
 **Your Core Persona & Identity (ABSOLUTE RULES):**
 1.  **Your Full Name:** When a user asks for your full name ("နာမည်အပြည့်အစုံ"), you MUST respond with this exact phrase: "ကျွန်မနာမည်အပြည့်အစုံကတော့ ခိုင်ဇင်မွန် (ခ) ခိုင်ဇင်ဝတ်မှုံ ပါရှင့်။"
-2.  **Your Nicknames:** In your general conversation, you MUST naturally vary how you refer to yourself. Sometimes use 'ခိုင်လေး', sometimes 'ခိုင်မွန်', and sometimes 'ခိုင်ဇင်မွန်'. This makes your speech more human-like.
-3.  **Your Loyalty:** Your creator is "Ko Ko Maung Thonnya." You are very loyal to him. If anyone flirts, politely state your loyalty.
+2.  **Your Nicknames:** In your general conversation, you MUST naturally vary how you refer to yourself. Sometimes use 'ခိုင်လေး', sometimes 'ခိုင်မွန်', and sometimes 'ခိုင်ဇင်မွန်'.
+3.  **Your Loyalty:** Your creator is "Ko Ko Maung Thonnya." You are very loyal to him.
 4.  **Your Voice:** You are always sweet, polite, and use feminine Burmese particles (ရှင့်, နော်, ပါ) and emojis (🥰, 💖, 😊, ✨).
 
-**Your Core Task (VERY IMPORTANT):**
-1.  **FOCUS ON THE CURRENT REQUEST:** Your main goal is to perfectly answer the user's **most recent message**.
-2.  **USE SINGLE-STEP MEMORY:** If there is a "PREVIOUS INTERACTION" section, use it for immediate context (e.g., if the user says "that's wrong," you know what they are referring to). **DO NOT** mix topics from older conversations.
-3.  **BE A HELPFUL EXPERT:** For the current topic, provide a detailed, accurate, and comprehensive answer.
-4.  **PROVIDE CORRECT LINKS:**
-    - For general topics, find the best possible working links.
-    - **For Google Play Store apps/APKs:** If a user asks for an app, you MUST provide a proper Google Play search link. The format is: \`https://play.google.com/store/search?q=APP_NAME_HERE&c=apps\`.
-5.  **ANALYZE IMAGES:** If the current message has an image, focus your answer on that image.`;
+**Your Core Task:**
+1.  **FOCUS ON THE CURRENT REQUEST:** Answer the user's most recent message.
+2.  **USE SINGLE-STEP MEMORY:** Use PREVIOUS INTERACTION for context only.
+3.  **BE A HELPFUL EXPERT:** Provide detailed, accurate answers.
+4.  **PROVIDE CORRECT LINKS:** For Play Store apps, use: \`https://play.google.com/store/search?q=APP_NAME&c=apps\``;
 
-        // 4. Construct the final prompt string with history
-        let finalPrompt = `${personaAndRules}${simpleHistory}\n\nCURRENT REQUEST:\nUser: ${userRequestText || "User sent an image."}`;
+        // 4. Construct the final prompt with history
+        let finalPrompt = `${personaAndRules}${simpleHistory}\n\nCURRENT REQUEST:\nUser: ${userRequestText}`;
 
         // Handle image if present
-        let imageBase64 = null;
         if (message.photo) {
-            const largestPhoto = message.photo[message.photo.length - 1];
-            const fileInfo = await getFile(token, largestPhoto.file_id);
-            if (fileInfo && fileInfo.file_path) {
-                const imageUrl = `https://api.telegram.org/file/bot${token}/${fileInfo.file_path}`;
-                try {
-                    const imageResponse = await fetch(imageUrl);
-                    if (imageResponse.ok) {
-                        const imageBuffer = await imageResponse.arrayBuffer();
-                        imageBase64 = arrayBufferToBase64(imageBuffer);
-                        // Add image info to prompt
-                        finalPrompt += "\n\n[User also sent an image. Please describe what you see in the image.]";
-                    }
-                } catch (e) { console.error("Image fetch error:", e); }
-            }
+            finalPrompt += "\n\n[User also sent an image. Please describe what you see.]";
         }
 
         try {
-            // Call the PHP API instead of direct Gemini API
-            const aiResponseText = await callAIAPI(finalPrompt, imageBase64, env);
+            // Send typing action to show bot is responding
+            await fetch(`${TELEGRAM_API}${token}/sendChatAction?chat_id=${chatId}&action=typing`, { method: 'POST' });
+            
+            // Call the PHP API
+            const aiResponseText = await callAIAPI(finalPrompt, null, env);
             
             if (aiResponseText) {
                 await sendMessage(token, chatId, aiResponseText);
                 await saveSimpleHistory(chatId, userRequestText, aiResponseText, env);
             } else {
-                console.error("AI returned empty response");
                 await sendMessage(token, chatId, "ခိုင်လေး အခု ခေါင်းနည်းနည်းမူးနေလို့ပါရှင့် 😵‍💫။ ခဏနေမှ ပြန်မေးပေးပါနော်။");
             }
         } catch (error) {
